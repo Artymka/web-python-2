@@ -1,0 +1,43 @@
+[tool.black]
+line-length = 79
+target-version = ['py311']
+
+[tool.ruff]
+# Поддержка длины строк как в Black
+line-length = 79
+# Включаем правила, соответствующие картинке
+select = [
+    "E", "W",  # Pycodestyle (PEP 8) -> Правило П4
+    "F",       # Pyflakes (логические ошибки)
+    "I",       # Isort (сортировка импортов)
+    "C90",     # McCabe (сложность) -> Правило П2
+    "N",       # Pep8-naming -> Правило П3
+    "D",       # Pydocstyle -> Правило П1
+    "PL",      # Pylint (магические числа, аргументы) -> Правила P4, П5
+    "PLR0913", # Too many arguments -> Правило P4
+    "PLR0915", # Too many statements -> Правило P3
+]
+ignore = [
+    "D203", "D213" # Конфликты с Black в докстрингах
+]
+
+[tool.ruff.pylint]
+# Максимальное количество аргументов функции (Правило P4)
+max-args = 7
+# Максимальное количество строк в функции (Правило P3)
+max-statements = 40
+
+[tool.ruff.mccabe]
+# Максимальная цикломатическая сложность (Правило П2)
+max-complexity = 10
+
+[tool.radon]
+# Настройки для команды cc (cyclomatic complexity)
+exclude = "tests/*,.venv/*,build/*"
+ignore = "tests,.venv,build"
+order = "SCORE"
+show_complexity = true
+
+# Настройки для команды mi (maintainability index)
+mi_min = "A"
+mi_max = "C"
