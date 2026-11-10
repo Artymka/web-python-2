@@ -18,9 +18,6 @@ from hypothesis.stateful import (
 )
 from werkzeug.serving import make_server
 
-TEST_DB_FILE = tempfile.mktemp(suffix="_test.db")
-os.environ["APP_DB_PATH"] = TEST_DB_FILE
-
 import src.model as server_model
 from src.app import app
 from src.client import ApiClient
