@@ -1,18 +1,18 @@
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as et
 import requests
 
 
 def _dict_to_xml_bytes(root_tag: str, data: dict) -> bytes:
     """Сериализует словарь в байтовую строку XML."""
-    elem = ET.Element(root_tag)
+    elem = et.Element(root_tag)
     for key, val in data.items():
-        child = ET.SubElement(elem, str(key))
+        child = et.SubElement(elem, str(key))
         if val is not None:
             child.text = str(val)
-    return ET.tostring(elem, encoding="utf-8")
+    return et.tostring(elem, encoding="utf-8")
 
 
-def _xml_to_dict(elem: ET.Element) -> dict | list | str:
+def _xml_to_dict(elem: et.Element) -> dict | list | str:
     """Рекурсивно преобразует XML Element в словарь или список."""
     children = list(elem)
     if not children:
@@ -43,10 +43,10 @@ def _parse_response(resp: requests.Response) -> dict:
         return parsed
 
     try:
-        root = ET.fromstring(resp.content)
+        root = et.fromstring(resp.content)
         parsed["root_tag"] = root.tag
         parsed["data"] = _xml_to_dict(root)
-    except ET.ParseError:
+    except et.ParseError:
         parsed["data"] = resp.text
     return parsed
 

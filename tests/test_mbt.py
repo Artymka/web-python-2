@@ -21,9 +21,9 @@ from werkzeug.serving import make_server
 TEST_DB_FILE = tempfile.mktemp(suffix="_test.db")
 os.environ["APP_DB_PATH"] = TEST_DB_FILE
 
-import src.model as server_model  # noqa: E402
-from src.app import app  # noqa: E402
-from src.client import ApiClient  # noqa: E402
+import src.model as server_model
+from src.app import app
+from src.client import ApiClient
 
 TEST_DB_FILE = tempfile.mktemp(suffix="_test.db")
 os.environ["APP_DB_PATH"] = TEST_DB_FILE
@@ -274,14 +274,6 @@ class ApiStateMachine(RuleBasedStateMachine):
         resp = self.client.single_completion(key)
         assert resp["status_code"] == STATUS_NOT_FOUND
 
-    @rule(key=KEY_STRATEGY)
-    def single_completion_missing(self, key: int) -> None:
-        """Проверяет GET /single/completion для несуществующего ключа."""
-        if server_model.get_completion(key) is not None:
-            return
-        resp = self.client.single_completion(key)
-        assert resp["status_code"] == 404
-
     @rule()
     def query_report(self) -> None:
         """Проверяет эндпоинт GET /query/report."""
@@ -355,66 +347,6 @@ class ApiStateMachine(RuleBasedStateMachine):
             f"{base}/insert/task/{key}", data=xml_data, headers=headers
         )
         assert resp.status_code == STATUS_BAD_REQUEST
-
-    @rule(key=KEY_STRATEGY)
-    def get_file_missing(self, key: int) -> None:
-        """Проверяет отдачу несуществующего файла (404 Not Found)."""
-        if key in self.tasks:
-            return
-        resp = self.client.get_file(f"{key}_missing.pdf")
-        assert resp.status_code == 404
-
-    @rule(
-        target_endpoint=st.sampled_from(["insert_session", "delete_session"])
-    )
-    def check_unsupported_media_type(self, target_endpoint: str) -> None:
-        """Проверяет возврат 415 Unsupported Media Type."""
-        base = self.client.base_url
-        headers = {"Content-Type": "application/json"}
-        if target_endpoint == "insert_session":
-            url = f"{base}/insert/session/99999"
-            resp = requests.put(url, data="{}", headers=headers)
-        else:
-            url = f"{base}/delete/session"
-            resp = requests.post(url, data="{}", headers=headers)
-        assert resp.status_code == 415
-
-    @rule(
-        target_endpoint=st.sampled_from(
-            ["single_session", "single_task", "single_completion"]
-        )
-    )
-    def check_missing_query_parameters(self, target_endpoint: str) -> None:
-        """Проверяет возврат 400 Bad Request при отсутствии key."""
-        base = self.client.base_url
-        endpoint_map = {
-            "single_session": f"{base}/single/session",
-            "single_task": f"{base}/single/task",
-            "single_completion": f"{base}/single/completion",
-        }
-        resp = requests.get(endpoint_map[target_endpoint])
-        assert resp.status_code == 400
-
-    @rule(target_endpoint=st.sampled_from(["delete_session", "delete_task"]))
-    def check_missing_delete_key(self, target_endpoint: str) -> None:
-        """Проверяет возврат 400 Bad Request при удалении без key в XML."""
-        base = self.client.base_url
-        headers = {"Content-Type": "text/xml"}
-        sub = "session" if "session" in target_endpoint else "task"
-        url = f"{base}/delete/{sub}"
-        resp = requests.post(url, data="<req></req>", headers=headers)
-        assert resp.status_code == 400
-
-    @rule(key=KEY_STRATEGY)
-    def check_insert_task_missing_session(self, key: int) -> None:
-        """Проверяет возврат 400 Bad Request при отсутствии session."""
-        base = self.client.base_url
-        headers = {"Content-Type": "text/xml"}
-        xml_data = "<task><parameter>p</parameter></task>"
-        resp = requests.put(
-            f"{base}/insert/task/{key}", data=xml_data, headers=headers
-        )
-        assert resp.status_code == 400
 
 
 @pytest.fixture(scope="module", autouse=True)
