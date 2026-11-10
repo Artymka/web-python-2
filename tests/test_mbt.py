@@ -18,12 +18,12 @@ from hypothesis.stateful import (
 )
 from werkzeug.serving import make_server
 
-TEST_DB_FILE = tempfile.mktemp(suffix="_test.db")
-os.environ["APP_DB_PATH"] = TEST_DB_FILE
-
 import src.model as server_model
 from src.app import app
 from src.client import ApiClient
+
+TEST_DB_FILE = tempfile.mktemp(suffix="_test.db")
+os.environ["APP_DB_PATH"] = TEST_DB_FILE
 
 SERVER_HOST = "127.0.0.1"
 KEY_STRATEGY = st.integers(min_value=1, max_value=1 << 20)

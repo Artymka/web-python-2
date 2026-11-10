@@ -228,4 +228,5 @@ input/*.txt
 *.sqlite
 *.sqlite3
 
-*.md
+prompt*.md
+AGENTS.md
