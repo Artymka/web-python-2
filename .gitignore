@@ -224,3 +224,6 @@ __marimo__/
 *.pdf
 input.txt
 input/*.txt
+*.db
+*.sqlite
+*.sqlite3
