@@ -1,18 +1,18 @@
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as et
 import requests
 
 
 def _dict_to_xml_bytes(root_tag: str, data: dict) -> bytes:
     """Сериализует словарь в байтовую строку XML."""
-    elem = ET.Element(root_tag)
+    elem = et.Element(root_tag)
     for key, val in data.items():
-        child = ET.SubElement(elem, str(key))
+        child = et.SubElement(elem, str(key))
         if val is not None:
             child.text = str(val)
-    return ET.tostring(elem, encoding="utf-8")
+    return et.tostring(elem, encoding="utf-8")
 
 
-def _xml_to_dict(elem: ET.Element) -> dict | list | str:
+def _xml_to_dict(elem: et.Element) -> dict | list | str:
     """Рекурсивно преобразует XML Element в словарь или список."""
     children = list(elem)
     if not children:
@@ -43,10 +43,10 @@ def _parse_response(resp: requests.Response) -> dict:
         return parsed
 
     try:
-        root = ET.fromstring(resp.content)
+        root = et.fromstring(resp.content)
         parsed["root_tag"] = root.tag
         parsed["data"] = _xml_to_dict(root)
-    except ET.ParseError:
+    except et.ParseError:
         parsed["data"] = resp.text
     return parsed
 
@@ -184,3 +184,91 @@ class ApiClient:
         """Вызывает GET /file/:filename для скачивания файла."""
         url = f"{self.base_url}/file/{filename}"
         return requests.get(url)
+
+
+def main() -> None:
+    """Демонстрирует вызов всех методов ApiClient с выводом результатов."""
+    client = ApiClient("http://127.0.0.1:8080/public/api/v3")
+
+    calls = [
+        (
+            "insert_session",
+            lambda: client.insert_session(
+                key=1,
+                ip="192.168.0.10",
+                locale="ru_RU",
+                user_agent="Mozilla/5.0 (X11; Linux x86_64)",
+            ),
+        ),
+        (
+            "delete_session",
+            lambda: client.delete_session(key=1),
+        ),
+        (
+            "query_session",
+            lambda: client.query_session(ip="192.168.0.10", locale="ru_RU"),
+        ),
+        (
+            "single_session",
+            lambda: client.single_session(key=1),
+        ),
+        (
+            "insert_task",
+            lambda: client.insert_task(
+                key=1,
+                session=1,
+                parameter="param-1",
+                description="Первая задача",
+            ),
+        ),
+        (
+            "delete_task",
+            lambda: client.delete_task(key=1),
+        ),
+        (
+            "query_task",
+            lambda: client.query_task(session=1, parameter="param-1", done=0),
+        ),
+        (
+            "single_task",
+            lambda: client.single_task(key=1),
+        ),
+        (
+            "query_completion",
+            lambda: client.query_completion(
+                task=1, response="ok", stage="done", error=None
+            ),
+        ),
+        (
+            "single_completion",
+            lambda: client.single_completion(key=1),
+        ),
+        (
+            "query_report",
+            lambda: client.query_report(),
+        ),
+    ]
+
+    for name, call in calls:
+        print(f"\n=== {name} ===")
+        try:
+            result = call()
+            print(f"status_code: {result.get('status_code')}")
+            if "root_tag" in result:
+                print(f"root_tag: {result['root_tag']}")
+            print(f"data: {result.get('data')}")
+        except Exception as exc:
+            print(f"Ошибка при вызове {name}: {exc}")
+
+    print("\n=== get_file ===")
+    try:
+        resp = client.get_file("example.txt")
+        print(f"status_code: {resp.status_code}")
+        print(f"content-type: {resp.headers.get('Content-Type')}")
+        print(f"content: {resp.text!r}")
+    except Exception as exc:
+        print(f"Ошибка при вызове get_file: {exc}")
+
+
+if __name__ == "__main__":
+    main()

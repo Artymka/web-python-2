@@ -2,7 +2,7 @@ import functools
 import os
 import subprocess
 import sys
-import xml.etree.ElementTree as ET
+import xml.etree.ElementTree as et
 from flask import Blueprint, Flask, Response, request, send_from_directory
 
 import src.model as model
@@ -27,9 +27,9 @@ def require_xml(func):
         """Проверяет Content-Type входящего запроса."""
         ctype = request.content_type or ""
         if ctype.split(";")[0].strip().lower() != XML_MIME:
-            elem = ET.Element("error")
+            elem = et.Element("error")
             elem.text = "Content-Type must be text/xml"
-            xml_bytes = ET.tostring(elem, encoding="utf-8")
+            xml_bytes = et.tostring(elem, encoding="utf-8")
             return Response(
                 xml_bytes,
                 status=STATUS_UNSUPPORTED_MEDIA,
@@ -40,25 +40,25 @@ def require_xml(func):
     return wrapper
 
 
-def dict_to_xml(tag_name: str, data: dict) -> ET.Element:
+def dict_to_xml(tag_name: str, data: dict) -> et.Element:
     """Конвертирует словарь в XML Element."""
-    elem = ET.Element(tag_name)
+    elem = et.Element(tag_name)
     for key, val in data.items():
-        child = ET.SubElement(elem, str(key))
+        child = et.SubElement(elem, str(key))
         if val is not None:
             child.text = str(val)
     return elem
 
 
-def xml_response(root_elem: ET.Element, status: int = 200) -> Response:
+def xml_response(root_elem: et.Element, status: int = 200) -> Response:
     """Формирует Response с телом XML и mime text/xml."""
-    xml_bytes = ET.tostring(root_elem, encoding="utf-8")
+    xml_bytes = et.tostring(root_elem, encoding="utf-8")
     return Response(xml_bytes, status=status, mimetype=XML_MIME)
 
 
 def error_response(message: str, status: int) -> Response:
     """Формирует XML-ответ с ошибкой."""
-    elem = ET.Element("error")
+    elem = et.Element("error")
     elem.text = message
     return xml_response(elem, status=status)
 
@@ -67,7 +67,7 @@ def parse_xml_body(data_bytes: bytes) -> dict:
     """Парсит плоский XML запрос в словарь ключ-значение."""
     if not data_bytes:
         return {}
-    root = ET.fromstring(data_bytes)
+    root = et.fromstring(data_bytes)
     return {child.tag: child.text for child in root}
 
 
@@ -87,7 +87,7 @@ def insert_session(key: int):
     except ValueError as exc:
         return error_response(str(exc), STATUS_BAD_REQUEST)
 
-    root = ET.Element("data")
+    root = et.Element("data")
     root.append(dict_to_xml("session", res))
     return xml_response(root)
 
@@ -105,7 +105,7 @@ def delete_session():
         return Response(status=STATUS_NOT_FOUND)
 
     res_dict = dict(zip(model.sessions_columns, res_list))
-    root = ET.Element("data")
+    root = et.Element("data")
     root.append(dict_to_xml("session", res_dict))
     return xml_response(root)
 
@@ -117,7 +117,7 @@ def query_session():
     res = model.query_session(
         ps.get("ip"), ps.get("locale"), ps.get("user_agent")
     )
-    root = ET.Element("data")
+    root = et.Element("data")
     for row in res:
         row_dict = dict(zip(model.sessions_columns, row))
         root.append(dict_to_xml("session", row_dict))
@@ -136,7 +136,7 @@ def single_session():
     if not res:
         return Response(status=STATUS_NOT_FOUND)
     row_dict = dict(zip(model.sessions_columns, res))
-    root = ET.Element("data")
+    root = et.Element("data")
     root.append(dict_to_xml("session", row_dict))
     return xml_response(root)
 
@@ -196,7 +196,7 @@ def insert_task(key: int):
     if err_msg is not None:
         return error_response(err_msg, status)
 
-    root = ET.Element("data")
+    root = et.Element("data")
     root.append(dict_to_xml("task", res))
     return xml_response(root)
 
@@ -214,7 +214,7 @@ def delete_task():
         return Response(status=STATUS_NOT_FOUND)
 
     res_dict = dict(zip(model.tasks_columns, res_list))
-    root = ET.Element("data")
+    root = et.Element("data")
     root.append(dict_to_xml("task", res_dict))
     return xml_response(root)
 
@@ -229,7 +229,7 @@ def query_task(session: int):
     res = model.query_task(
         session, ps.get("parameter"), ps.get("description"), done
     )
-    root = ET.Element("data")
+    root = et.Element("data")
     for row in res:
         row_dict = dict(zip(model.tasks_columns, row))
         root.append(dict_to_xml("task", row_dict))
@@ -248,7 +248,7 @@ def single_task():
     if not res:
         return Response(status=STATUS_NOT_FOUND)
     row_dict = dict(zip(model.tasks_columns, res))
-    root = ET.Element("data")
+    root = et.Element("data")
     root.append(dict_to_xml("task", row_dict))
     return xml_response(root)
 
@@ -260,7 +260,7 @@ def query_completion(task: int):
     res = model.query_completion(
         task, ps.get("response"), ps.get("stage"), ps.get("error")
     )
-    root = ET.Element("data")
+    root = et.Element("data")
     for row in res:
         row_dict = dict(zip(model.completions_columns, row))
         root.append(dict_to_xml("completion", row_dict))
@@ -279,7 +279,7 @@ def single_completion():
     if not res:
         return Response(status=STATUS_NOT_FOUND)
     row_dict = dict(zip(model.completions_columns, res))
-    root = ET.Element("data")
+    root = et.Element("data")
     root.append(dict_to_xml("completion", row_dict))
     return xml_response(root)
 
@@ -297,7 +297,7 @@ def get_file(filename: str):
 def query_report():
     """Выполняет реляционную формулу pi(T x sigma) для отчета."""
     rows = model.query_report()
-    root = ET.Element("data")
+    root = et.Element("data")
     for row in rows:
         row_dict = dict(zip(model.report_columns, row))
         root.append(dict_to_xml("row", row_dict))

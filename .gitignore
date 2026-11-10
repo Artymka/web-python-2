@@ -227,3 +227,5 @@ input/*.txt
 *.db
 *.sqlite
 *.sqlite3
+
+*.md

@@ -21,9 +21,9 @@ from werkzeug.serving import make_server
 TEST_DB_FILE = tempfile.mktemp(suffix="_test.db")
 os.environ["APP_DB_PATH"] = TEST_DB_FILE
 
-import src.model as server_model  # noqa: E402
-from src.app import app  # noqa: E402
-from src.client import ApiClient  # noqa: E402
+import src.model as server_model
+from src.app import app
+from src.client import ApiClient
 
 SERVER_HOST = "127.0.0.1"
 KEY_STRATEGY = st.integers(min_value=1, max_value=1 << 20)
@@ -40,6 +40,11 @@ SAFE_TEXT = st.text(
     max_size=20,
 )
 OPTIONAL_TEXT = st.one_of(st.none(), SAFE_TEXT)
+STATUS_OK = 200
+STATUS_BAD_REQUEST = 400
+STATUS_UNSUPPORTED_MEDIA = 415
+STATUS_NOT_FOUND = 404
+STATUS_SERVER_ERROR = 500
 
 
 class ServerThread(threading.Thread):
@@ -117,9 +122,9 @@ class ApiStateMachine(RuleBasedStateMachine):
         """Проверяет эндпоинт создания сессии PUT /insert/session/:key."""
         resp = self.client.insert_session(key, ip, locale, ua)
         if key in self.sessions:
-            assert resp["status_code"] == 400
+            assert resp["status_code"] == STATUS_BAD_REQUEST
         else:
-            assert resp["status_code"] == 200
+            assert resp["status_code"] == STATUS_OK
             self.sessions[key] = {
                 "key": key,
                 "ip": ip,
@@ -133,7 +138,7 @@ class ApiStateMachine(RuleBasedStateMachine):
     ) -> None:
         """Проверяет эндпоинт GET /query/session."""
         resp = self.client.query_session(ip=ip, locale=locale, user_agent=ua)
-        assert resp["status_code"] == 200
+        assert resp["status_code"] == STATUS_OK
 
     @precondition(lambda self: bool(self.sessions))
     @rule(data=st.data())
@@ -141,7 +146,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         """Проверяет эндпоинт GET /single/session для существующего ключа."""
         key = data.draw(st.sampled_from(list(self.sessions.keys())))
         resp = self.client.single_session(key)
-        assert resp["status_code"] == 200
+        assert resp["status_code"] == STATUS_OK
 
     @rule(key=KEY_STRATEGY)
     def single_session_missing(self, key: int) -> None:
@@ -149,7 +154,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         if key in self.sessions:
             return
         resp = self.client.single_session(key)
-        assert resp["status_code"] == 404
+        assert resp["status_code"] == STATUS_NOT_FOUND
 
     @precondition(lambda self: bool(self.sessions))
     @rule(data=st.data())
@@ -157,7 +162,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         """Проверяет эндпоинт POST /delete/session для существующей сессии."""
         key = data.draw(st.sampled_from(list(self.sessions.keys())))
         resp = self.client.delete_session(key)
-        assert resp["status_code"] == 200
+        assert resp["status_code"] == STATUS_OK
         self.sessions.pop(key, None)
         dead_tasks = [k for k, v in self.tasks.items() if v["session"] == key]
         for task_k in dead_tasks:
@@ -169,7 +174,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         if key in self.sessions:
             return
         resp = self.client.delete_session(key)
-        assert resp["status_code"] == 404
+        assert resp["status_code"] == STATUS_NOT_FOUND
 
     @precondition(lambda self: bool(self.sessions))
     @rule(
@@ -185,9 +190,9 @@ class ApiStateMachine(RuleBasedStateMachine):
         sess_key = data.draw(st.sampled_from(list(self.sessions.keys())))
         resp = self.client.insert_task(key, sess_key, parameter, description)
         if key in self.tasks:
-            assert resp["status_code"] == 400
+            assert resp["status_code"] == STATUS_BAD_REQUEST
         else:
-            assert resp["status_code"] == 200
+            assert resp["status_code"] == STATUS_OK
             self.tasks[key] = {
                 "key": key,
                 "session": sess_key,
@@ -211,7 +216,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         resp = self.client.query_task(
             sess_key, parameter=param, description=desc, done=done
         )
-        assert resp["status_code"] == 200
+        assert resp["status_code"] == STATUS_OK
 
     @precondition(lambda self: bool(self.tasks))
     @rule(data=st.data())
@@ -219,7 +224,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         """Проверяет эндпоинт GET /single/task для существующей задачи."""
         key = data.draw(st.sampled_from(list(self.tasks.keys())))
         resp = self.client.single_task(key)
-        assert resp["status_code"] == 200
+        assert resp["status_code"] == STATUS_OK
 
     @rule(key=KEY_STRATEGY)
     def single_task_missing(self, key: int) -> None:
@@ -227,7 +232,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         if key in self.tasks:
             return
         resp = self.client.single_task(key)
-        assert resp["status_code"] == 404
+        assert resp["status_code"] == STATUS_NOT_FOUND
 
     @precondition(lambda self: bool(self.tasks))
     @rule(data=st.data())
@@ -235,7 +240,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         """Проверяет POST /delete/task для существующей задачи."""
         key = data.draw(st.sampled_from(list(self.tasks.keys())))
         resp = self.client.delete_task(key)
-        assert resp["status_code"] == 200
+        assert resp["status_code"] == STATUS_OK
         self.tasks.pop(key, None)
 
     @rule(key=KEY_STRATEGY)
@@ -244,7 +249,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         if key in self.tasks:
             return
         resp = self.client.delete_task(key)
-        assert resp["status_code"] == 404
+        assert resp["status_code"] == STATUS_NOT_FOUND
 
     @precondition(lambda self: bool(self.tasks))
     @rule(
@@ -265,7 +270,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         resp = self.client.query_completion(
             task_key, response=response, stage=stage, error=error
         )
-        assert resp["status_code"] == 200
+        assert resp["status_code"] == STATUS_OK
 
     @precondition(lambda self: bool(self.tasks))
     @rule(data=st.data())
@@ -278,7 +283,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         if comp_records:
             comp_key = comp_records[0][0]
             resp = self.client.single_completion(comp_key)
-            assert resp["status_code"] == 200
+            assert resp["status_code"] == STATUS_OK
 
     @rule(key=KEY_STRATEGY)
     def single_completion_missing(self, key: int) -> None:
@@ -286,13 +291,13 @@ class ApiStateMachine(RuleBasedStateMachine):
         if server_model.get_completion(key) is not None:
             return
         resp = self.client.single_completion(key)
-        assert resp["status_code"] == 404
+        assert resp["status_code"] == STATUS_NOT_FOUND
 
     @rule()
     def query_report(self) -> None:
         """Проверяет эндпоинт GET /query/report."""
         resp = self.client.query_report()
-        assert resp["status_code"] == 200
+        assert resp["status_code"] == STATUS_OK
 
     @precondition(lambda self: bool(self.tasks))
     @rule(data=st.data())
@@ -300,7 +305,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         """Проверяет отдачу сгенерированного PDF файла."""
         task_key = data.draw(st.sampled_from(list(self.tasks.keys())))
         resp = self.client.get_file(f"{task_key}.pdf")
-        assert resp.status_code == 200
+        assert resp.status_code == STATUS_OK
 
     @rule(key=KEY_STRATEGY)
     def get_file_missing(self, key: int) -> None:
@@ -308,7 +313,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         if key in self.tasks:
             return
         resp = self.client.get_file(f"{key}_missing.pdf")
-        assert resp.status_code == 404
+        assert resp.status_code == STATUS_NOT_FOUND
 
     @rule(
         target_endpoint=st.sampled_from(["insert_session", "delete_session"])
@@ -323,7 +328,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         else:
             url = f"{base}/delete/session"
             resp = requests.post(url, data="{}", headers=headers)
-        assert resp.status_code == 415
+        assert resp.status_code == STATUS_UNSUPPORTED_MEDIA
 
     @rule(
         target_endpoint=st.sampled_from(
@@ -339,7 +344,7 @@ class ApiStateMachine(RuleBasedStateMachine):
             "single_completion": f"{base}/single/completion",
         }
         resp = requests.get(endpoint_map[target_endpoint])
-        assert resp.status_code == 400
+        assert resp.status_code == STATUS_BAD_REQUEST
 
     @rule(target_endpoint=st.sampled_from(["delete_session", "delete_task"]))
     def check_missing_delete_key(self, target_endpoint: str) -> None:
@@ -349,7 +354,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         sub = "session" if "session" in target_endpoint else "task"
         url = f"{base}/delete/{sub}"
         resp = requests.post(url, data="<req></req>", headers=headers)
-        assert resp.status_code == 400
+        assert resp.status_code == STATUS_BAD_REQUEST
 
     @rule(key=KEY_STRATEGY)
     def check_insert_task_missing_session(self, key: int) -> None:
@@ -360,7 +365,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         resp = requests.put(
             f"{base}/insert/task/{key}", data=xml_data, headers=headers
         )
-        assert resp.status_code == 400
+        assert resp.status_code == STATUS_BAD_REQUEST
 
 
 @pytest.fixture(scope="module", autouse=True)
