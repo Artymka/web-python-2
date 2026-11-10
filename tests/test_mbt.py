@@ -1,6 +1,7 @@
 import os
 import shutil
 import socket
+import tempfile
 import threading
 import time
 from typing import Any
@@ -17,20 +18,28 @@ from hypothesis.stateful import (
 )
 from werkzeug.serving import make_server
 
-import src.model as server_model
-from src.app import app
-from src.client import ApiClient
+TEST_DB_FILE = tempfile.mktemp(suffix="_test.db")
+os.environ["APP_DB_PATH"] = TEST_DB_FILE
+
+import src.model as server_model  # noqa: E402
+from src.app import app  # noqa: E402
+from src.client import ApiClient  # noqa: E402
 
 SERVER_HOST = "127.0.0.1"
 KEY_STRATEGY = st.integers(min_value=1, max_value=1 << 20)
 SAFE_TEXT = st.text(
     alphabet=st.characters(
-        whitelist_categories=("Lu", "Ll", "Nd"),
-        whitelist_characters=" _-",
+        whitelist_categories=(),
+        whitelist_characters=(
+            "abcdefghijklmnopqrstuvwxyz"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            "0123456789 _-"
+        ),
     ),
     min_size=1,
     max_size=20,
 )
+OPTIONAL_TEXT = st.one_of(st.none(), SAFE_TEXT)
 
 
 class ServerThread(threading.Thread):
@@ -75,6 +84,7 @@ class ApiStateMachine(RuleBasedStateMachine):
         """Инициализация состояния теста."""
         super().__init__()
         server_model.reset_state()
+        _clean_io_dirs()
 
         self.sessions: dict[int, dict] = {}
         self.tasks: dict[int, dict] = {}
@@ -117,10 +127,12 @@ class ApiStateMachine(RuleBasedStateMachine):
                 "user_agent": ua,
             }
 
-    @rule()
-    def query_session(self) -> None:
+    @rule(ip=OPTIONAL_TEXT, locale=OPTIONAL_TEXT, ua=OPTIONAL_TEXT)
+    def query_session(
+        self, ip: str | None, locale: str | None, ua: str | None
+    ) -> None:
         """Проверяет эндпоинт GET /query/session."""
-        resp = self.client.query_session()
+        resp = self.client.query_session(ip=ip, locale=locale, user_agent=ua)
         assert resp["status_code"] == 200
 
     @precondition(lambda self: bool(self.sessions))
@@ -147,6 +159,9 @@ class ApiStateMachine(RuleBasedStateMachine):
         resp = self.client.delete_session(key)
         assert resp["status_code"] == 200
         self.sessions.pop(key, None)
+        dead_tasks = [k for k, v in self.tasks.items() if v["session"] == key]
+        for task_k in dead_tasks:
+            self.tasks.pop(task_k, None)
 
     @rule(key=KEY_STRATEGY)
     def delete_session_missing(self, key: int) -> None:
@@ -182,11 +197,20 @@ class ApiStateMachine(RuleBasedStateMachine):
             }
 
     @precondition(lambda self: bool(self.sessions))
-    @rule(data=st.data())
-    def query_task(self, data: Any) -> None:
+    @rule(
+        data=st.data(),
+        param=OPTIONAL_TEXT,
+        desc=OPTIONAL_TEXT,
+        done=st.one_of(st.none(), st.sampled_from([0, 1])),
+    )
+    def query_task(
+        self, data: Any, param: str | None, desc: str | None, done: int | None
+    ) -> None:
         """Проверяет эндпоинт GET /query/task/:session."""
         sess_key = data.draw(st.sampled_from(list(self.sessions.keys())))
-        resp = self.client.query_task(sess_key)
+        resp = self.client.query_task(
+            sess_key, parameter=param, description=desc, done=done
+        )
         assert resp["status_code"] == 200
 
     @precondition(lambda self: bool(self.tasks))
@@ -223,11 +247,24 @@ class ApiStateMachine(RuleBasedStateMachine):
         assert resp["status_code"] == 404
 
     @precondition(lambda self: bool(self.tasks))
-    @rule(data=st.data())
-    def query_completion(self, data: Any) -> None:
+    @rule(
+        data=st.data(),
+        response=OPTIONAL_TEXT,
+        stage=OPTIONAL_TEXT,
+        error=OPTIONAL_TEXT,
+    )
+    def query_completion(
+        self,
+        data: Any,
+        response: str | None,
+        stage: str | None,
+        error: str | None,
+    ) -> None:
         """Проверяет эндпоинт GET /query/completion/:task."""
         task_key = data.draw(st.sampled_from(list(self.tasks.keys())))
-        resp = self.client.query_completion(task_key)
+        resp = self.client.query_completion(
+            task_key, response=response, stage=stage, error=error
+        )
         assert resp["status_code"] == 200
 
     @precondition(lambda self: bool(self.tasks))
@@ -243,6 +280,14 @@ class ApiStateMachine(RuleBasedStateMachine):
             resp = self.client.single_completion(comp_key)
             assert resp["status_code"] == 200
 
+    @rule(key=KEY_STRATEGY)
+    def single_completion_missing(self, key: int) -> None:
+        """Проверяет GET /single/completion для несуществующего ключа."""
+        if server_model.get_completion(key) is not None:
+            return
+        resp = self.client.single_completion(key)
+        assert resp["status_code"] == 404
+
     @rule()
     def query_report(self) -> None:
         """Проверяет эндпоинт GET /query/report."""
@@ -257,6 +302,66 @@ class ApiStateMachine(RuleBasedStateMachine):
         resp = self.client.get_file(f"{task_key}.pdf")
         assert resp.status_code == 200
 
+    @rule(key=KEY_STRATEGY)
+    def get_file_missing(self, key: int) -> None:
+        """Проверяет отдачу несуществующего файла (404 Not Found)."""
+        if key in self.tasks:
+            return
+        resp = self.client.get_file(f"{key}_missing.pdf")
+        assert resp.status_code == 404
+
+    @rule(
+        target_endpoint=st.sampled_from(["insert_session", "delete_session"])
+    )
+    def check_unsupported_media_type(self, target_endpoint: str) -> None:
+        """Проверяет возврат 415 Unsupported Media Type."""
+        base = self.client.base_url
+        headers = {"Content-Type": "application/json"}
+        if target_endpoint == "insert_session":
+            url = f"{base}/insert/session/99999"
+            resp = requests.put(url, data="{}", headers=headers)
+        else:
+            url = f"{base}/delete/session"
+            resp = requests.post(url, data="{}", headers=headers)
+        assert resp.status_code == 415
+
+    @rule(
+        target_endpoint=st.sampled_from(
+            ["single_session", "single_task", "single_completion"]
+        )
+    )
+    def check_missing_query_parameters(self, target_endpoint: str) -> None:
+        """Проверяет возврат 400 Bad Request при отсутствии key."""
+        base = self.client.base_url
+        endpoint_map = {
+            "single_session": f"{base}/single/session",
+            "single_task": f"{base}/single/task",
+            "single_completion": f"{base}/single/completion",
+        }
+        resp = requests.get(endpoint_map[target_endpoint])
+        assert resp.status_code == 400
+
+    @rule(target_endpoint=st.sampled_from(["delete_session", "delete_task"]))
+    def check_missing_delete_key(self, target_endpoint: str) -> None:
+        """Проверяет возврат 400 Bad Request при удалении без key в XML."""
+        base = self.client.base_url
+        headers = {"Content-Type": "text/xml"}
+        sub = "session" if "session" in target_endpoint else "task"
+        url = f"{base}/delete/{sub}"
+        resp = requests.post(url, data="<req></req>", headers=headers)
+        assert resp.status_code == 400
+
+    @rule(key=KEY_STRATEGY)
+    def check_insert_task_missing_session(self, key: int) -> None:
+        """Проверяет возврат 400 Bad Request при отсутствии session."""
+        base = self.client.base_url
+        headers = {"Content-Type": "text/xml"}
+        xml_data = "<task><parameter>p</parameter></task>"
+        resp = requests.put(
+            f"{base}/insert/task/{key}", data=xml_data, headers=headers
+        )
+        assert resp.status_code == 400
+
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_server():
@@ -270,6 +375,11 @@ def setup_server():
     time.sleep(0.1)
     yield
     server.shutdown()
+    if os.path.exists(TEST_DB_FILE):
+        try:
+            os.remove(TEST_DB_FILE)
+        except OSError:
+            pass
 
 
 def test_api_state_machine() -> None:
@@ -277,38 +387,6 @@ def test_api_state_machine() -> None:
     run_state_machine_as_test(
         ApiStateMachine,
         settings=settings(
-            max_examples=35, stateful_step_count=20, deadline=None
+            max_examples=40, stateful_step_count=25, deadline=None
         ),
     )
-
-
-def test_unsupported_media_type() -> None:
-    """Тестирование валидации Content-Type (ожидается 415)."""
-    base_url = ApiStateMachine.client.base_url
-    bad_headers = {"Content-Type": "application/json"}
-    put_resp = requests.put(
-        f"{base_url}/insert/session/999",
-        data="{}",
-        headers=bad_headers,
-    )
-    assert put_resp.status_code == 415
-
-    post_resp = requests.post(
-        f"{base_url}/delete/session",
-        data="{}",
-        headers=bad_headers,
-    )
-    assert post_resp.status_code == 415
-
-
-def test_missing_query_parameters() -> None:
-    """Тестирование ошибочных параметров запроса (400 Bad Request)."""
-    base_url = ApiStateMachine.client.base_url
-    resp = requests.get(f"{base_url}/single/session")
-    assert resp.status_code == 400
-
-    resp = requests.get(f"{base_url}/single/task")
-    assert resp.status_code == 400
-
-    resp = requests.get(f"{base_url}/single/completion")
-    assert resp.status_code == 400

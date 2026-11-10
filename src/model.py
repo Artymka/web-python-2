@@ -1,9 +1,10 @@
-import random
-import threading
+import os
 import time
+from pony import orm
 
-completions = []
-completions_lock = threading.Lock()
+DEFAULT_DB_FILE = "app.db"
+SECONDS_IN_SEVEN_MIN = 7 * 60
+
 completions_columns = [
     "key",
     "datetime",
@@ -12,8 +13,6 @@ completions_columns = [
     "error",
     "task",
 ]
-tasks = []
-tasks_lock = threading.Lock()
 tasks_columns = [
     "key",
     "datetime",
@@ -22,126 +21,182 @@ tasks_columns = [
     "description",
     "done",
 ]
-sessions = []
-sessions_lock = threading.Lock()
 sessions_columns = ["key", "datetime", "ip", "locale", "user_agent"]
 aggregate_columns = ["response", "description", "parameter"]
 report_columns = ["description", "parameter"]
 
-
-def use_lock(lock: threading.Lock):
-    """Декоратор для синхронизации вызовов функций через Lock."""
-
-    def decorator(func):
-        """Возвращает обертку с захватом блокировки."""
-
-        def wrapper(*args, **kwargs):
-            """Выполняет целевую функцию с захватом блокировки."""
-            lock.acquire()
-            res = None
-            try:
-                res = func(*args, **kwargs)
-            finally:
-                lock.release()
-            return res
-
-        return wrapper
-
-    return decorator
+db = orm.Database()
 
 
-def base_create(source: list, *args) -> int:
-    """Создает запись со случайным ключом и текущим временем."""
-    max_key = 1 << 31
-    key = random.randint(0, max_key)
-    existing_keys = {item[0] for item in source}
-    while key in existing_keys:
-        key = random.randint(0, max_key)
+class Session(db.Entity):
+    """Сущность сессии в базе данных SQLite."""
 
+    _table_ = "sessions"
+    key = orm.PrimaryKey(int)
+    datetime = orm.Required(int)
+    ip = orm.Optional(str, nullable=False, default="")
+    locale = orm.Optional(str, nullable=False, default="")
+    user_agent = orm.Optional(str, nullable=False, default="")
+    tasks = orm.Set("Task", cascade_delete=True)
+
+
+class Task(db.Entity):
+    """Сущность вычислительной задачи в базе данных SQLite."""
+
+    _table_ = "tasks"
+    key = orm.PrimaryKey(int)
+    datetime = orm.Required(int)
+    parameter = orm.Optional(str, nullable=False, default="")
+    session = orm.Required(Session)
+    description = orm.Optional(str, nullable=False, default="")
+    done = orm.Required(int)
+    completions = orm.Set("Completion", cascade_delete=True)
+
+
+class Completion(db.Entity):
+    """Сущность результата выполнения задачи в базе данных SQLite."""
+
+    _table_ = "completions"
+    key = orm.PrimaryKey(int, auto=True)
+    datetime = orm.Required(int)
+    response = orm.Optional(str, nullable=False, default="")
+    stage = orm.Optional(str, nullable=False, default="")
+    error = orm.Optional(str, nullable=False, default="")
+    task = orm.Required(Task)
+
+
+def init_db(db_path: str | None = None) -> orm.Database:
+    """Инициализирует подключение к SQLite и генерирует маппинг таблиц."""
+    if db.provider is not None:
+        return db
+
+    path = db_path or os.environ.get("APP_DB_PATH", DEFAULT_DB_FILE)
+    if path == ":memory:":
+        db.bind(provider="sqlite", filename=":memory:")
+    else:
+        abs_path = os.path.abspath(path)
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        db.bind(provider="sqlite", filename=abs_path, create_db=True)
+
+    db.generate_mapping(create_tables=True)
+    return db
+
+
+init_db()
+
+
+def session_to_list(sess: Session) -> list:
+    """Преобразует сущность Session в список значений."""
+    return [sess.key, sess.datetime, sess.ip, sess.locale, sess.user_agent]
+
+
+def task_to_list(task: Task) -> list:
+    """Преобразует сущность Task в список значений."""
+    return [
+        task.key,
+        task.datetime,
+        task.parameter,
+        task.session.key,
+        task.description,
+        task.done,
+    ]
+
+
+def completion_to_list(comp: Completion) -> list:
+    """Преобразует сущность Completion в список значений."""
+    return [
+        comp.key,
+        comp.datetime,
+        comp.response,
+        comp.stage,
+        comp.error,
+        comp.task.key,
+    ]
+
+
+@orm.db_session
+def reset_state() -> None:
+    """Очищает состояние всех таблиц базы данных."""
+    Completion.select().delete()
+    Task.select().delete()
+    Session.select().delete()
+    orm.commit()
+
+
+@orm.db_session
+def create_session_with_key(
+    key: int, ip: str, locale: str, user_agent: str
+) -> dict:
+    """Создает запись Session с заданным пользователем ключом."""
+    existing = Session.get(key=key)
+    if existing is not None:
+        raise ValueError(f"Session with key {key} already exists")
     created_at = int(time.time())
-    source.append([key, created_at, *args])
+    sess = Session(
+        key=key,
+        datetime=created_at,
+        ip=ip or "",
+        locale=locale or "",
+        user_agent=user_agent or "",
+    )
+    orm.commit()
+    return dict(zip(sessions_columns, session_to_list(sess)))
+
+
+@orm.db_session
+def create_session(ip: str, locale: str, user_agent: str) -> int:
+    """Создает запись Session с автогенерацией ключа."""
+    max_key = 1 << 31
+    key = int(time.time_ns()) % max_key
+    while Session.get(key=key) is not None:
+        key = (key + 1) % max_key
+    create_session_with_key(key, ip, locale, user_agent)
     return key
 
 
-def base_delete(source: list, key: int) -> list | None:
-    """Удаляет запись по первичному ключу из списка-источника."""
-    for idx, item in enumerate(source):
-        if item[0] == key:
-            return source.pop(idx)
-    return None
-
-
-def base_get(source: list, key: int) -> list | None:
-    """Возвращает запись по первичному ключу."""
-    for item in source:
-        if item[0] == key:
-            return item
-    return None
-
-
-def reset_state() -> None:
-    """Очищает состояние всех таблиц в памяти."""
-    with sessions_lock:
-        sessions.clear()
-    with tasks_lock:
-        tasks.clear()
-    with completions_lock:
-        completions.clear()
-
-
-@use_lock(completions_lock)
-def create_completion(response: str, stage: str, error: str, task: int) -> int:
-    """Создает запись Completion."""
-    return base_create(completions, response, stage, error, task)
-
-
-@use_lock(completions_lock)
-def delete_completion(key: int) -> list | None:
-    """Удаляет запись Completion по ключу."""
-    return base_delete(completions, key)
-
-
-@use_lock(completions_lock)
-def get_completions() -> list:
-    """Возвращает все записи Completion."""
-    return list(completions)
-
-
-@use_lock(completions_lock)
-def get_completion(key: int) -> list | None:
-    """Возвращает одну запись Completion по ключу."""
-    return base_get(completions, key)
-
-
-@use_lock(completions_lock)
-def query_completion(
-    task: int,
-    response: str | None,
-    stage: str | None,
-    error: str | None,
-) -> list:
-    """Выполняет фильтрацию Completion по задаче и атрибутам."""
-    res = []
-    for item in completions:
-        if (
-            item[5] == task
-            and (response is None or item[2] == response)
-            and (stage is None or item[3] == stage)
-            and (error is None or item[4] == error)
-        ):
-            res.append(item)
+@orm.db_session
+def delete_session(key: int) -> list | None:
+    """Удаляет запись Session по первичному ключу."""
+    sess = Session.get(key=key)
+    if sess is None:
+        return None
+    res = session_to_list(sess)
+    sess.delete()
+    orm.commit()
     return res
 
 
-@use_lock(tasks_lock)
-def create_task(
-    parameter: str, session: int, description: str, done: int
-) -> int:
-    """Создает запись Task со случайным ключом."""
-    return base_create(tasks, parameter, session, description, done)
+@orm.db_session
+def get_session(key: int) -> list | None:
+    """Возвращает запись Session по первичному ключу."""
+    sess = Session.get(key=key)
+    if sess is None:
+        return None
+    return session_to_list(sess)
 
 
-@use_lock(tasks_lock)
+@orm.db_session
+def get_sessions() -> list:
+    """Возвращает все записи Session."""
+    return [session_to_list(s) for s in Session.select()]
+
+
+@orm.db_session
+def query_session(
+    ip: str | None, locale: str | None, user_agent: str | None
+) -> list:
+    """Выполняет фильтрацию Session по заданным атрибутам."""
+    query = Session.select()
+    if ip is not None:
+        query = query.filter(lambda s: s.ip == ip)
+    if locale is not None:
+        query = query.filter(lambda s: s.locale == locale)
+    if user_agent is not None:
+        query = query.filter(lambda s: s.user_agent == user_agent)
+    return [session_to_list(s) for s in query]
+
+
+@orm.db_session
 def create_task_with_key(
     key: int,
     parameter: str,
@@ -150,34 +205,66 @@ def create_task_with_key(
     done: int,
 ) -> dict:
     """Создает запись Task с заданным пользователем ключом."""
-    existing = base_get(tasks, key)
+    existing = Task.get(key=key)
     if existing is not None:
         raise ValueError(f"Task with key {key} already exists")
+    sess = Session.get(key=session)
+    if sess is None:
+        raise ValueError(f"Session with key {session} does not exist")
     created_at = int(time.time())
-    record = [key, created_at, parameter, session, description, done]
-    tasks.append(record)
-    return dict(zip(tasks_columns, record))
+    task = Task(
+        key=key,
+        datetime=created_at,
+        parameter=parameter or "",
+        session=sess,
+        description=description or "",
+        done=done,
+    )
+    orm.commit()
+    return dict(zip(tasks_columns, task_to_list(task)))
 
 
-@use_lock(tasks_lock)
+@orm.db_session
+def create_task(
+    parameter: str, session: int, description: str, done: int
+) -> int:
+    """Создает запись Task с автогенерацией ключа."""
+    max_key = 1 << 31
+    key = int(time.time_ns()) % max_key
+    while Task.get(key=key) is not None:
+        key = (key + 1) % max_key
+    create_task_with_key(key, parameter, session, description, done)
+    return key
+
+
+@orm.db_session
 def delete_task(key: int) -> list | None:
-    """Удаляет запись Task по ключу."""
-    return base_delete(tasks, key)
+    """Удаляет запись Task по первичному ключу."""
+    task = Task.get(key=key)
+    if task is None:
+        return None
+    res = task_to_list(task)
+    task.delete()
+    orm.commit()
+    return res
 
 
-@use_lock(tasks_lock)
+@orm.db_session
+def get_task(key: int) -> list | None:
+    """Возвращает одну запись Task по первичному ключу."""
+    task = Task.get(key=key)
+    if task is None:
+        return None
+    return task_to_list(task)
+
+
+@orm.db_session
 def get_tasks() -> list:
     """Возвращает все записи Task."""
-    return list(tasks)
+    return [task_to_list(t) for t in Task.select()]
 
 
-@use_lock(tasks_lock)
-def get_task(key: int) -> list | None:
-    """Возвращает одну запись Task по ключу."""
-    return base_get(tasks, key)
-
-
-@use_lock(tasks_lock)
+@orm.db_session
 def query_task(
     session: int,
     parameter: str | None,
@@ -185,73 +272,80 @@ def query_task(
     done: int | None,
 ) -> list:
     """Выполняет фильтрацию Task по сессии и атрибутам."""
-    res = []
-    for item in tasks:
-        if (
-            item[3] == session
-            and (parameter is None or item[2] == parameter)
-            and (description is None or item[4] == description)
-            and (done is None or item[5] == done)
-        ):
-            res.append(item)
-    return res
+    query = Task.select(lambda t: t.session.key == session)
+    if parameter is not None:
+        query = query.filter(lambda t: t.parameter == parameter)
+    if description is not None:
+        query = query.filter(lambda t: t.description == description)
+    if done is not None:
+        query = query.filter(lambda t: t.done == done)
+    return [task_to_list(t) for t in query]
 
 
-@use_lock(sessions_lock)
-def create_session(ip: str, locale: str, user_agent: str) -> int:
-    """Создает запись Session со случайным ключом."""
-    return base_create(sessions, ip, locale, user_agent)
-
-
-@use_lock(sessions_lock)
-def create_session_with_key(
-    key: int, ip: str, locale: str, user_agent: str
-) -> dict:
-    """Создает запись Session с заданным ключом."""
-    existing = base_get(sessions, key)
-    if existing is not None:
-        raise ValueError(f"Session with key {key} already exists")
+@orm.db_session
+def create_completion(response: str, stage: str, error: str, task: int) -> int:
+    """Создает запись Completion."""
+    task_obj = Task.get(key=task)
+    if task_obj is None:
+        raise ValueError(f"Task with key {task} does not exist")
     created_at = int(time.time())
-    record = [key, created_at, ip, locale, user_agent]
-    sessions.append(record)
-    return dict(zip(sessions_columns, record))
+    comp = Completion(
+        datetime=created_at,
+        response=response or "",
+        stage=stage or "",
+        error=error or "",
+        task=task_obj,
+    )
+    orm.commit()
+    return comp.key
 
 
-@use_lock(sessions_lock)
-def delete_session(key: int) -> list | None:
-    """Удаляет запись Session по ключу."""
-    return base_delete(sessions, key)
-
-
-@use_lock(sessions_lock)
-def get_sessions() -> list:
-    """Возвращает все записи Session."""
-    return list(sessions)
-
-
-@use_lock(sessions_lock)
-def get_session(key: int) -> list | None:
-    """Возвращает запись Session по ключу."""
-    return base_get(sessions, key)
-
-
-@use_lock(sessions_lock)
-def query_session(
-    ip: str | None, locale: str | None, user_agent: str | None
-) -> list:
-    """Выполняет фильтрацию Session по атрибутам."""
-    res = []
-    for item in sessions:
-        if (
-            (ip is None or item[2] == ip)
-            and (locale is None or item[3] == locale)
-            and (user_agent is None or item[4] == user_agent)
-        ):
-            res.append(item)
+@orm.db_session
+def delete_completion(key: int) -> list | None:
+    """Удаляет запись Completion по первичному ключу."""
+    comp = Completion.get(key=key)
+    if comp is None:
+        return None
+    res = completion_to_list(comp)
+    comp.delete()
+    orm.commit()
     return res
 
 
-def _filter_recent(recs: list, seconds: int = 7 * 60) -> list:
+@orm.db_session
+def get_completion(key: int) -> list | None:
+    """Возвращает одну запись Completion по первичному ключу."""
+    comp = Completion.get(key=key)
+    if comp is None:
+        return None
+    return completion_to_list(comp)
+
+
+@orm.db_session
+def get_completions() -> list:
+    """Возвращает все записи Completion."""
+    return [completion_to_list(c) for c in Completion.select()]
+
+
+@orm.db_session
+def query_completion(
+    task: int,
+    response: str | None,
+    stage: str | None,
+    error: str | None,
+) -> list:
+    """Выполняет фильтрацию Completion по задаче и атрибутам."""
+    query = Completion.select(lambda c: c.task.key == task)
+    if response is not None:
+        query = query.filter(lambda c: c.response == response)
+    if stage is not None:
+        query = query.filter(lambda c: c.stage == stage)
+    if error is not None:
+        query = query.filter(lambda c: c.error == error)
+    return [completion_to_list(c) for c in query]
+
+
+def _filter_recent(recs: list, seconds: int = SECONDS_IN_SEVEN_MIN) -> list:
     """Оставляет записи за последние seconds секунд."""
     threshold = int(time.time()) - seconds
     return [rec for rec in recs if rec[1] >= threshold]
@@ -284,17 +378,18 @@ def _append_unmatched(join_rows: list, task_list: list, used_ids: set) -> list:
     return join_rows
 
 
-@use_lock(completions_lock)
-@use_lock(tasks_lock)
+@orm.db_session
 def aggregate() -> list:
     """Выполняет агрегацию связки completion и task."""
-    recent = _filter_recent(completions)
-    tasks_index = _tasks_by_id(tasks)
+    comps = get_completions()
+    tasks_list = get_tasks()
+    recent = _filter_recent(comps)
+    tasks_index = _tasks_by_id(tasks_list)
     join_rows, used_ids = _merge(recent, tasks_index)
-    return _append_unmatched(join_rows, tasks, used_ids)
+    return _append_unmatched(join_rows, tasks_list, used_ids)
 
 
-@use_lock(tasks_lock)
+@orm.db_session
 def query_report() -> list:
     """Возвращает проекцию полей description и parameter для Task."""
-    return [[task[4], task[2]] for task in tasks]
+    return [[t.description, t.parameter] for t in Task.select()]
