@@ -1,10 +1,11 @@
-import code128
 import sys
+import code128
 
 
-def convert(inp: str, out: str):
-    with open(inp) as i:
-        content = i.read().strip()
+def convert(inp: str, out: str) -> None:
+    """Считывает текстовую строку из файла и сохраняет штрих-код."""
+    with open(inp, "r", encoding="utf-8") as file:
+        content = file.read().strip()
         code128.image(content).save(out, save_all=True)
 
 
